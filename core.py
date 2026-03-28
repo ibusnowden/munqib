@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
-"""core.py — minimal agent for pretraining data prep (FineWeb-Edu / ClimbX style)"""
+"""core.py — minimal agent for pretraining data prep (FineWeb-Edu / ClimbMix style)."""
 
-import glob as globlib, json, os, re, subprocess, urllib.request
+import glob as globlib
+import json
+import os
+import re
+import subprocess
+import urllib.request
+from typing import Any, Dict
+
+from munqib_dataprep.agent_tools import get_agent_tools
 
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY")
 API_URL = "https://openrouter.ai/api/v1/messages" if OPENROUTER_KEY else "https://api.anthropic.com/v1/messages"
@@ -45,9 +53,7 @@ def edit(args):
     count = text.count(old)
     if not args.get("all") and count > 1:
         return f"error: old_string appears {count} times, must be unique (use all=true)"
-    replacement = (
-        text.replace(old, new) if args.get("all") else text.replace(old, new, 1)
-    )
+    replacement = text.replace(old, new) if args.get("all") else text.replace(old, new, 1)
     with open(args["path"], "w") as f:
         f.write(replacement)
     return "ok"
@@ -79,16 +85,15 @@ def grep(args):
 
 
 def stats(args):
-    path  = args["path"]
+    path = args["path"]
     field = args.get("field", "text")
-    fmt   = args.get("format", "auto")
+    fmt = args.get("format", "auto")
 
     lengths = []
-    is_jsonl = None  # determined on first non-empty line if auto
+    is_jsonl = None
 
     with open(path) as f:
         if fmt != "text":
-            # JSONL path (or auto-detect)
             text_chunks = []
             for line in f:
                 stripped = line.strip()
@@ -108,7 +113,6 @@ def stats(args):
                 else:
                     text_chunks.append(line)
             if is_jsonl is False:
-                # Fell through to text mode mid-file — finish collecting
                 content = "".join(text_chunks)
                 sep = "<|endoftext|>" if "<|endoftext|>" in content else "\n\n"
                 for doc in content.split(sep):
@@ -125,36 +129,40 @@ def stats(args):
                     lengths.append(len(doc))
 
     if is_jsonl is None:
-        is_jsonl = False  # empty file
+        is_jsonl = False
 
     if not lengths:
         return "docs: 0\nchars: 0\ntokens: ~0  (chars / 4)\nlengths: no docs found"
 
-    count       = len(lengths)
+    count = len(lengths)
     total_chars = sum(lengths)
-    tokens      = total_chars // 4
-    mean_len    = total_chars // count
+    tokens = total_chars // 4
+    mean_len = total_chars // count
     sorted_lens = sorted(lengths)
     p50 = sorted_lens[len(sorted_lens) // 2]
     p90 = sorted_lens[len(sorted_lens) * 9 // 10]
 
-    def fmt(n): return f"{n:,}"
-    fmt_name  = "jsonl" if is_jsonl else "text"
+    def fmt_num(n):
+        return f"{n:,}"
+
+    fmt_name = "jsonl" if is_jsonl else "text"
     field_str = f"  field: {field}" if is_jsonl else ""
     return (
-        f"docs:    {fmt(count)}\n"
-        f"chars:   {fmt(total_chars)}\n"
-        f"tokens:  ~{fmt(tokens)}  (chars / 4)\n"
-        f"lengths: min={fmt(min(lengths))}  mean={fmt(mean_len)}  p50={fmt(p50)}  p90={fmt(p90)}  max={fmt(max(lengths))}\n"
+        f"docs:    {fmt_num(count)}\n"
+        f"chars:   {fmt_num(total_chars)}\n"
+        f"tokens:  ~{fmt_num(tokens)}  (chars / 4)\n"
+        f"lengths: min={fmt_num(min(lengths))}  mean={fmt_num(mean_len)}  p50={fmt_num(p50)}  p90={fmt_num(p90)}  max={fmt_num(max(lengths))}\n"
         f"format:  {fmt_name}{field_str}"
     )
 
 
 def bash(args):
     proc = subprocess.Popen(
-        args["cmd"], shell=True,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True
+        args["cmd"],
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
     output_lines = []
     try:
@@ -172,9 +180,7 @@ def bash(args):
     return "".join(output_lines).strip() or "(empty)"
 
 
-# --- Tool definitions: (description, schema, function) ---
-
-TOOLS = {
+BASE_TOOLS = {
     "read": (
         "Read file with line numbers (file path, not directory)",
         {"path": "string", "offset": "number?", "limit": "number?"},
@@ -212,36 +218,58 @@ TOOLS = {
     ),
 }
 
+TOOLS = {**BASE_TOOLS, **get_agent_tools()}
 
-def run_tool(name, args):
+
+def _serialize_tool_result(result: Any) -> str:
+    if isinstance(result, str):
+        return result
+    if result is None:
+        return "null"
     try:
-        return TOOLS[name][2](args)
+        return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+    except TypeError:
+        return str(result)
+
+
+def run_tool(name: str, args: Dict[str, Any]) -> str:
+    try:
+        result = TOOLS[name][2](args)
+        return _serialize_tool_result(result)
     except Exception as err:
         return f"error: {err}"
+
+
+def _build_object_schema(params: Dict[str, Any]) -> Dict[str, Any]:
+    properties = {}
+    required = []
+    for param_name, param_type in params.items():
+        if isinstance(param_type, dict):
+            schema = dict(param_type)
+            is_optional = schema.pop("_optional", False)
+            properties[param_name] = schema
+            if not is_optional:
+                required.append(param_name)
+            continue
+        is_optional = str(param_type).endswith("?")
+        base_type = str(param_type).rstrip("?")
+        properties[param_name] = {
+            "type": "integer" if base_type == "number" else base_type
+        }
+        if not is_optional:
+            required.append(param_name)
+    return {"type": "object", "properties": properties, "required": required}
 
 
 def make_schema():
     result = []
     for name, (description, params, _fn) in TOOLS.items():
-        properties = {}
-        required = []
-        for param_name, param_type in params.items():
-            is_optional = param_type.endswith("?")
-            base_type = param_type.rstrip("?")
-            properties[param_name] = {
-                "type": "integer" if base_type == "number" else base_type
-            }
-            if not is_optional:
-                required.append(param_name)
+        schema = dict(params) if isinstance(params, dict) and params.get("type") == "object" else _build_object_schema(params)
         result.append(
             {
                 "name": name,
                 "description": description,
-                "input_schema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
-                },
+                "input_schema": schema,
             }
         )
     return result
@@ -262,7 +290,11 @@ def call_api(messages, system_prompt):
         headers={
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01",
-            **({"Authorization": f"Bearer {OPENROUTER_KEY}"} if OPENROUTER_KEY else {"x-api-key": os.environ.get("ANTHROPIC_API_KEY", "")}),
+            **(
+                {"Authorization": f"Bearer {OPENROUTER_KEY}"}
+                if OPENROUTER_KEY
+                else {"x-api-key": os.environ.get("ANTHROPIC_API_KEY", "")}
+            ),
         },
     )
     response = urllib.request.urlopen(request)
@@ -278,10 +310,20 @@ def render_markdown(text):
 
 
 def main():
-    print(f"{BOLD}core{RESET} | {DIM}{MODEL} ({'OpenRouter' if OPENROUTER_KEY else 'Anthropic'}) | {os.getcwd()}{RESET}\n")
+    provider_name = "OpenRouter" if OPENROUTER_KEY else "Anthropic"
+    print(f"{BOLD}core{RESET} | {DIM}{MODEL} ({provider_name}) | {os.getcwd()}{RESET}\n")
     messages = []
-    dp_ctx = " dataprep.py available: filter/dedup/score/sample subcommands for pretraining data." if os.path.exists("dataprep.py") else ""
-    system_prompt = f"Agent for pretraining data prep (FineWeb-Edu / ClimbX style). cwd: {os.getcwd()}.{dp_ctx}"
+    dp_ctx = (
+        " Native dataprep tools available: workspace profile, saved recipes, source inspection, background build/curate jobs,"
+        " job status/logs/artifacts, and legacy filter/dedup/score/sample/stats commands."
+        if os.path.exists("dataprep.py")
+        else ""
+    )
+    system_prompt = (
+        f"Agent for pretraining data prep (FineWeb-Edu / ClimbMix style). cwd: {os.getcwd()}."
+        " Prefer native dataprep tools over bash when possible."
+        f"{dp_ctx}"
+    )
 
     while True:
         try:
@@ -299,7 +341,6 @@ def main():
 
             messages.append({"role": "user", "content": user_input})
 
-            # agentic loop: keep calling API until no more tool calls
             while True:
                 response = call_api(messages, system_prompt)
                 content_blocks = response.get("content", [])
@@ -313,16 +354,14 @@ def main():
                         tool_name = block["name"]
                         tool_args = block["input"]
                         arg_preview = str(next(iter(tool_args.values()), ""))[:50]
-                        print(
-                            f"\n{GREEN}⏺ {tool_name.capitalize()}{RESET}({DIM}{arg_preview}{RESET})"
-                        )
+                        print(f"\n{GREEN}⏺ {tool_name}{RESET}({DIM}{arg_preview}{RESET})")
 
                         result = run_tool(tool_name, tool_args)
                         result_lines = result.split("\n")
                         preview = result_lines[0][:60]
                         if len(result_lines) > 1:
                             preview += f" ... +{len(result_lines) - 1} lines"
-                        elif len(result_lines[0]) > 60:
+                        elif result_lines and len(result_lines[0]) > 60:
                             preview += "..."
                         print(f"  {DIM}⎿  {preview}{RESET}")
 

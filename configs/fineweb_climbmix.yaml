@@ -1,0 +1,26 @@
+sources:
+  - source: fineweb-edu
+    split: train
+    subset: sample-10BT
+    limit: 1000
+  - source: nemotron-climbmix
+    split: train
+    limit: 1000
+language:
+  min_score: 0.8
+classifiers:
+  quality:
+    enabled: true
+    gate: false
+  domain:
+    enabled: true
+    gate: false
+  toxicity:
+    enabled: true
+    gate: true
+    max_score: 0.4
+dedup:
+  fuzzy:
+    enabled: false
+outputs:
+  include_final_metadata: false

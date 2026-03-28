@@ -575,11 +575,11 @@ fn main() {
     let model = env::var("MODEL").unwrap_or_else(|_| default_model(&provider).to_string());
     let cwd   = env::current_dir().unwrap_or_default();
 
-    println!("{}nanocode{} | {}{} ({}) | {}{}\n",
+    println!("{}munqib{} | {}{} ({}) | {}{}\n",
         BOLD, RESET, DIM, model, provider_name(&provider), cwd.display(), RESET);
 
     let dp_ctx = if std::path::Path::new("dataprep.py").exists() {
-        " dataprep.py available: filter/dedup/score/sample subcommands for pretraining data."
+        " dataprep.py available: build/curate for canonical JSONL, audit JSONL, and final training outputs; legacy filter/dedup/score/sample/stats commands also available."
     } else { "" };
     let system_prompt = format!("Concise coding assistant. cwd: {}.{}", cwd.display(), dp_ctx);
     let mut messages: Vec<Message> = Vec::new();
