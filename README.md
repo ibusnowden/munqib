@@ -1,4 +1,4 @@
-# nanocode
+# munqib
 
 Minimal agent for pretraining data prep — FineWeb-Edu / ClimbX style workflows. Two implementations:
 
@@ -7,7 +7,7 @@ Minimal agent for pretraining data prep — FineWeb-Edu / ClimbX style workflows
 
 Both run the same agentic loop: send user messages to an LLM, execute tool calls, feed results back, repeat. Pair with `dataprep.py` to orchestrate filter → dedup → score → sample pipelines from natural language.
 
-![screenshot](screenshot.png)
+# add picture later
 
 ## Quick start
 
